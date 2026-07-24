@@ -18,14 +18,29 @@ interface Hazard {
   lat: number;
   lng: number;
   source?: string;
+  distance_km?: number;
 }
 
+interface OperationalHub {
+  id: string;
+  name: string;
+  center: [number, number]; // [lng, lat]
+  radiusKm: number;
+}
+
+const OPERATIONAL_HUBS: OperationalHub[] = [
+  { id: 'nanakramguda', name: 'Nanakramguda / Financial Dist', center: [78.3392, 17.4168], radiusKm: 4.0 },
+  { id: 'mehdipatnam', name: 'Mehdipatnam / Tolichowki', center: [78.4382, 17.3950], radiusKm: 4.0 },
+  { id: 'hiteccity', name: 'Hitec City / Madhapur', center: [78.3780, 17.4435], radiusKm: 4.0 },
+  { id: 'dilsukhnagar', name: 'Dilsukhnagar / Malakpet', center: [78.5280, 17.3688], radiusKm: 5.0 },
+  { id: 'all_city', name: '🌐 Entire Greater Hyderabad', center: [78.4500, 17.4100], radiusKm: 30.0 }
+];
+
 const DEFAULT_STORM_HOTSPOTS: Hazard[] = [
-  { id: 'sim-1', location_name: "Dilsukhnagar Underpass Waterlog", water_depth_level: "CRITICAL_IMPASSABLE", description: "Severe inundation (45cm water depth)", lng: 78.5281, lat: 17.3688, source: 'simulation' },
-  { id: 'sim-2', location_name: "Malakpet RUB Severe Inundation", water_depth_level: "CRITICAL_IMPASSABLE", description: "Waterlogged railway underbridge corridor", lng: 78.4867, lat: 17.3850, source: 'simulation' },
-  { id: 'sim-3', location_name: "Punjagutta Flyover Slip Road Hazard", water_depth_level: "CRITICAL_IMPASSABLE", description: "Blocked slip road due to pooling", lng: 78.4400, lat: 17.4300, source: 'simulation' },
-  { id: 'sim-4', location_name: "Hitec City Mindspace Water Logging", water_depth_level: "CRITICAL_IMPASSABLE", description: "High risk IT hub commute blockage", lng: 78.3780, lat: 17.4435, source: 'simulation' },
-  { id: 'police-1', location_name: "Begumpet Airport Road Diversion", water_depth_level: "POLICE_ADVISORY", description: "TG Police Advisory: Lane Diversions", lng: 78.4983, lat: 17.4399, source: 'police' }
+  { id: 'sim-1', location_name: "Nanakramguda Rotary Underpass", water_depth_level: "CRITICAL_IMPASSABLE", description: "Severe inundation (45cm water depth)", lng: 78.3410, lat: 17.4120, source: 'simulation' },
+  { id: 'sim-2', location_name: "Tolichowki Flyover Underpass", water_depth_level: "CRITICAL_IMPASSABLE", description: "Waterlogged railway underbridge corridor", lng: 78.4382, lat: 17.3950, source: 'simulation' },
+  { id: 'sim-3', location_name: "Mindspace Underpass Waterlog", water_depth_level: "CRITICAL_IMPASSABLE", description: "High risk IT hub commute blockage", lng: 78.3780, lat: 17.4435, source: 'simulation' },
+  { id: 'sim-4', location_name: "Malakpet RUB Severe Inundation", water_depth_level: "CRITICAL_IMPASSABLE", description: "Flooded railway underpass", lng: 78.4867, lat: 17.3850, source: 'simulation' }
 ];
 
 export default function App() {
@@ -51,8 +66,9 @@ export default function App() {
   const [showMedium, setShowMedium] = useState<boolean>(true);
   const [showPoliceAlerts, setShowPoliceAlerts] = useState<boolean>(true);
 
-  // TIME-RANGE FILTER TOGGLE (Hours back)
+  // TIME WINDOW & ACTIVE HUB SELECTION
   const [timeWindow, setTimeWindow] = useState<number>(24);
+  const [selectedHub, setSelectedHub] = useState<OperationalHub>(OPERATIONAL_HUBS[0]); // Default to Nanakramguda
 
   // 1. OPEN-METEO LIVE RAIN API
   const fetchLiveWeather = async () => {
@@ -60,14 +76,14 @@ export default function App() {
 
     try {
       const res = await fetch(
-        'https://api.open-meteo.com/v1/forecast?latitude=17.3850&longitude=78.4867&current=precipitation,rain,showers&timezone=Asia%2FKolkata'
+        `https://api.open-meteo.com/v1/forecast?latitude=${selectedHub.center[1]}&longitude=${selectedHub.center[0]}&current=precipitation,rain,showers&timezone=Asia%2FKolkata`
       );
       const data = await res.json();
       const currentRain = data.current?.rain ?? data.current?.precipitation ?? 0;
 
       if (currentRain > 0) {
         setIsRaining(true);
-        setRainStatus(`🌧️ Live Rain Active: ${currentRain} mm/h`);
+        setRainStatus(`🌧️ Rain Active at ${selectedHub.name.split('/')[0]}: ${currentRain} mm/h`);
       } else {
         setIsRaining(false);
         setRainStatus(`☀️ Clear Weather (${currentRain} mm/h)`);
@@ -144,22 +160,27 @@ export default function App() {
   // EXPORT HAZARD SUMMARY AS CSV FILE
   const exportToCSV = async () => {
     try {
-      const { data } = await supabase.rpc('get_active_hazards', { hours_back: timeWindow });
+      const { data } = await supabase.rpc('get_hazards_near_location', {
+        target_lat: selectedHub.center[1],
+        target_lng: selectedHub.center[0],
+        radius_km: selectedHub.radiusKm,
+        hours_back: timeWindow
+      });
       const hazardsToExport = (data && data.length > 0) ? data : (isSimulationActive ? DEFAULT_STORM_HOTSPOTS : []);
 
       if (hazardsToExport.length === 0) {
-        alert("No active hazards currently logged for this time window.");
+        alert("No active hazards currently logged for this hub and time window.");
         return;
       }
 
-      const headers = ["ID", "Location Name", "Severity Level", "Latitude", "Longitude", "Source"];
+      const headers = ["ID", "Location Name", "Severity Level", "Latitude", "Longitude", "Distance (km)"];
       const rows = hazardsToExport.map((h: Hazard) => [
         `"${h.id}"`,
         `"${(h.location_name || '').replace(/"/g, '""')}"`,
         `"${h.water_depth_level}"`,
         h.lat,
         h.lng,
-        `"${h.source || 'Live MJ Watch'}"`
+        h.distance_km ? h.distance_km.toFixed(2) : 'N/A'
       ]);
 
       const csvContent = "data:text/csv;charset=utf-8," 
@@ -168,7 +189,7 @@ export default function App() {
       const encodedUri = encodeURI(csvContent);
       const link = document.createElement("a");
       link.setAttribute("href", encodedUri);
-      link.setAttribute("download", `fleet_advisory_report_${timeWindow}h_${new Date().toISOString().slice(0, 10)}.csv`);
+      link.setAttribute("download", `fleet_advisory_${selectedHub.id}_${timeWindow}h.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -217,9 +238,16 @@ export default function App() {
     }
   };
 
+  // SPATIAL HAZARD FETCH BASED ON POSTGIS HUB GEOFENCE
   const fetchHazards = async () => {
     try {
-      const { data, error } = await supabase.rpc('get_active_hazards', { hours_back: timeWindow });
+      const { data, error } = await supabase.rpc('get_hazards_near_location', {
+        target_lat: selectedHub.center[1],
+        target_lng: selectedHub.center[0],
+        radius_km: selectedHub.radiusKm,
+        hours_back: timeWindow
+      });
+
       if (!error && data) {
         const points = isSimulationActive ? DEFAULT_STORM_HOTSPOTS : (data as Hazard[]);
         setActiveHazardsCount(points.length);
@@ -257,6 +285,7 @@ export default function App() {
       const isPolice = point.water_depth_level === 'POLICE_ADVISORY' || point.source === 'police';
       const color = isPolice ? '#3b82f6' : (point.water_depth_level === 'CRITICAL_IMPASSABLE' ? '#ef4444' : '#f59e0b');
       const iconBadge = isPolice ? '👮‍♂️ TG TRAFFIC POLICE ADVISORY' : '🚨 ROUTE HAZARD';
+      const distanceLabel = point.distance_km ? ` (${point.distance_km.toFixed(1)} km away)` : '';
 
       if (map.current) {
         const popup = new maplibregl.Popup({ offset: 25 }).setHTML(
@@ -264,7 +293,7 @@ export default function App() {
             <span style="background:${color}; color:#fff; font-size:9px; font-weight:bold; padding:2px 6px; border-radius:4px; display:inline-block; margin-bottom:4px;">
               ${iconBadge}
             </span>
-            <strong style="font-size:13px; color:#1e293b; display:block; margin-top:2px; margin-bottom:4px;">${point.location_name}</strong>
+            <strong style="font-size:13px; color:#1e293b; display:block; margin-top:2px; margin-bottom:4px;">${point.location_name}${distanceLabel}</strong>
             <small style="color:#555; display:block; margin-top:4px;">${point.description || 'Reported via MJ Fleet Watch'}</small><br/>
             <button id="btn-${point.id}" style="background:#ef4444; color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold; width:100%;">
               🗑️ Resolve & Remove
@@ -294,9 +323,10 @@ export default function App() {
     });
   };
 
+  // RE-FETCH DATA ON FILTER CHANGE
   useEffect(() => {
     fetchHazards();
-  }, [showCritical, showMedium, showPoliceAlerts, timeWindow]);
+  }, [showCritical, showMedium, showPoliceAlerts, timeWindow, selectedHub]);
 
   // ANIMATED RAIN CANVAS
   useEffect(() => {
@@ -358,8 +388,8 @@ export default function App() {
     map.current = new maplibregl.Map({
       container: mapContainer.current,
       style: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
-      center: [78.45, 17.41],
-      zoom: 11,
+      center: selectedHub.center,
+      zoom: 13,
     });
 
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -411,6 +441,21 @@ export default function App() {
 
     return () => clearInterval(interval);
   }, []);
+
+  const handleHubChange = (hubId: string) => {
+    const hub = OPERATIONAL_HUBS.find(h => h.id === hubId);
+    if (!hub) return;
+    setSelectedHub(hub);
+
+    if (map.current) {
+      map.current.flyTo({
+        center: hub.center,
+        zoom: hub.id === 'all_city' ? 11 : 13.5,
+        essential: true,
+        speed: 1.2
+      });
+    }
+  };
 
   const submitReport = async () => {
     if (!reportCoords || !reportName.trim()) return;
@@ -502,7 +547,7 @@ export default function App() {
         </span>
         <div style={{ overflow: 'hidden', flex: 1 }}>
           <div style={{ whiteSpace: 'nowrap', display: 'inline-block', animation: 'mj-ticker-scroll 30s linear infinite' }}>
-            📢 {rainStatus} &nbsp;|&nbsp; 🚨 {activeHazardsCount} active route hazard{activeHazardsCount === 1 ? '' : 's'} being tracked ({timeWindow}h window) &nbsp;|&nbsp;{' '}
+            📢 Active Hub: <strong>{selectedHub.name}</strong> &nbsp;|&nbsp; 🚨 {activeHazardsCount} hazards within {selectedHub.radiusKm}km &nbsp;|&nbsp;{' '}
             👮 Official TG Traffic Police Feed Active &nbsp;|&nbsp; Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : '—'}
           </div>
         </div>
@@ -520,7 +565,7 @@ export default function App() {
         {/* SIDEBAR */}
         <div
           style={{
-            width: '300px',
+            width: '320px',
             background: '#0f172a',
             color: '#f8fafc',
             zIndex: 20,
@@ -533,13 +578,44 @@ export default function App() {
             overflowY: 'auto',
           }}
         >
+          {/* OPERATIONAL HUB SELECTOR */}
+          <div style={{ background: '#1e293b', padding: '12px', borderRadius: '8px', border: '1px solid #38bdf8' }}>
+            <span style={{ fontSize: '11px', color: '#38bdf8', fontWeight: 'bold', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>
+              🎯 Target Operational Hub
+            </span>
+            <select
+              value={selectedHub.id}
+              onChange={(e) => handleHubChange(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '8px',
+                borderRadius: '4px',
+                background: '#0f172a',
+                color: '#fff',
+                border: '1px solid #334155',
+                fontSize: '13px',
+                fontWeight: 'bold',
+                cursor: 'pointer'
+              }}
+            >
+              {OPERATIONAL_HUBS.map((hub) => (
+                <option key={hub.id} value={hub.id}>
+                  {hub.name}
+                </option>
+              ))}
+            </select>
+            <span style={{ fontSize: '10px', color: '#94a3b8', display: 'block', marginTop: '6px' }}>
+              Geofence Radius: <strong>{selectedHub.radiusKm} km</strong> from hub center
+            </span>
+          </div>
+
           <div>
             <span style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold' }}>
-              Active Route Hazards
+              Active Local Hazards
             </span>
 
             <div style={{ fontSize: '28px', fontWeight: 'bold', color: activeHazardsCount > 0 ? '#ef4444' : '#22c55e', marginTop: '4px' }}>
-              {activeHazardsCount} <span style={{ fontSize: '13px', color: '#cbd5e1', fontWeight: 'normal' }}>active route hazards</span>
+              {activeHazardsCount} <span style={{ fontSize: '13px', color: '#cbd5e1', fontWeight: 'normal' }}>impacting local hub</span>
             </div>
 
             {/* ADVISORY TIME WINDOW SELECTOR */}
@@ -603,76 +679,10 @@ export default function App() {
 
           <hr style={{ borderColor: '#334155', margin: 0 }} />
 
-          {/* DYNAMIC KEY EMPLOYEE CORRIDORS DROPDOWN */}
-          <div>
-            <span style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold', display: 'block', marginBottom: '8px' }}>
-              Key Employee Corridors
-            </span>
-
-            <select
-              onChange={(e) => {
-                if (!e.target.value) return;
-                const selectedCorridor = JSON.parse(e.target.value);
-                if (map.current) {
-                  map.current.flyTo({
-                    center: selectedCorridor.center,
-                    zoom: 13.5,
-                    essential: true
-                  });
-                }
-              }}
-              style={{
-                width: '100%',
-                padding: '8px 10px',
-                borderRadius: '6px',
-                background: '#1e293b',
-                color: '#f8fafc',
-                border: '1px solid #334155',
-                fontSize: '12px',
-                marginBottom: '12px',
-                cursor: 'pointer'
-              }}
-            >
-              <option value="">-- Select Corridor to Inspect --</option>
-              <option value={JSON.stringify({ name: "Hitec City ➔ ORR", center: [78.3772, 17.4435] })}>
-                Hitec City ➔ ORR
-              </option>
-              <option value={JSON.stringify({ name: "Dilsukhnagar ➔ Lakdikapul", center: [78.5280, 17.3688] })}>
-                Dilsukhnagar ➔ Lakdikapul
-              </option>
-              <option value={JSON.stringify({ name: "Gachibowli ➔ Airport (RGIA)", center: [78.3614, 17.4401] })}>
-                Gachibowli ➔ Airport
-              </option>
-              <option value={JSON.stringify({ name: "Kukatpally ➔ Ameerpet", center: [78.4071, 17.4849] })}>
-                Kukatpally ➔ Ameerpet
-              </option>
-              <option value={JSON.stringify({ name: "Secunderabad ➔ Begumpet", center: [78.4983, 17.4399] })}>
-                Secunderabad ➔ Begumpet
-              </option>
-            </select>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ background: '#1e293b', padding: '8px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '12px' }}>Hitec City ➔ ORR</span>
-                <span style={{ fontSize: '10px', background: isRaining ? '#ef4444' : '#22c55e', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
-                  {isRaining ? 'HIGH RISK' : 'CLEAR'}
-                </span>
-              </div>
-              <div style={{ background: '#1e293b', padding: '8px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '12px' }}>Dilsukhnagar ➔ Lakdikapul</span>
-                <span style={{ fontSize: '10px', background: activeHazardsCount > 0 ? '#ef4444' : '#22c55e', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
-                  {activeHazardsCount > 0 ? 'WATERLOGGED' : 'CLEAR'}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <hr style={{ borderColor: '#334155', margin: 0 }} />
-
           <div style={{ background: '#1e293b', padding: '12px', borderRadius: '8px', border: '1px solid #38bdf8' }}>
             <strong style={{ fontSize: '12px', color: '#38bdf8' }}>🔌 MoveInSync API Ready</strong>
             <p style={{ fontSize: '11px', color: '#94a3b8', margin: '4px 0 0 0', lineHeight: 1.4 }}>
-              MJ exposes REST endpoints (`/get_active_hazards`) that can plug directly into MoveInSync routing engines.
+              MJ exposes REST endpoints (`/get_hazards_near_location`) that plug into MoveInSync routing engines for geofenced cab detour planning.
             </p>
           </div>
         </div>
@@ -723,7 +733,7 @@ export default function App() {
                   autoFocus
                   value={reportName}
                   onChange={(e) => setReportName(e.target.value)}
-                  placeholder="e.g. Waterlog near flyover"
+                  placeholder="e.g. Waterlog near campus gate"
                   style={{
                     width: '100%',
                     padding: '8px',
