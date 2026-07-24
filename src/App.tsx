@@ -136,6 +136,37 @@ export default function App() {
     }
   };
 
+  // EXPORT HAZARD SUMMARY AS CSV FILE
+  const exportToCSV = async () => {
+    try {
+      const { data } = await supabase.rpc('get_active_hazards');
+      const hazardsToExport = (data && data.length > 0) ? data : DEFAULT_STORM_HOTSPOTS;
+
+      const headers = ["ID", "Location Name", "Severity Level", "Latitude", "Longitude", "Source"];
+      const rows = hazardsToExport.map((h: Hazard) => [
+        `"${h.id}"`,
+        `"${(h.location_name || '').replace(/"/g, '""')}"`,
+        `"${h.water_depth_level}"`,
+        h.lat,
+        h.lng,
+        `"${h.source || 'Live MJ Watch'}"`
+      ]);
+
+      const csvContent = "data:text/csv;charset=utf-8," 
+        + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
+
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `fleet_advisory_report_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      alert("Unable to generate CSV report right now.");
+    }
+  };
+
   // TOGGLE MONSOON DOWNPOUR SIMULATION
   const toggleStormSimulation = async () => {
     if (isSimulationActive) {
@@ -243,6 +274,17 @@ export default function App() {
     });
   };
 
+  // Update dynamic route line color based on storm/rain state
+  useEffect(() => {
+    if (map.current && map.current.getLayer('cab-route-line')) {
+      map.current.setPaintProperty(
+        'cab-route-line',
+        'line-color',
+        isRaining || isSimulationActive ? '#ef4444' : '#22c55e'
+      );
+    }
+  }, [isRaining, isSimulationActive]);
+
   // Re-render markers when checkbox toggles change
   useEffect(() => {
     fetchHazards();
@@ -315,6 +357,7 @@ export default function App() {
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
 
     map.current.on('load', () => {  
+      // ISRO Bhuvan Flood Layer
       map.current?.addSource('isro-bhuvan-flood-layer', {
         type: 'raster',
         tiles: [
@@ -329,6 +372,39 @@ export default function App() {
         source: 'isro-bhuvan-flood-layer',
         paint: {
           'raster-opacity': 0.5
+        }
+      });
+
+      // CAB ROUTE AVOIDANCE SIMULATOR LAYER (Dilsukhnagar ➔ Lakdikapul ➔ Hitec City)
+      map.current?.addSource('cab-route-source', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          properties: {},
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [78.5281, 17.3688], // Dilsukhnagar
+              [78.4867, 17.3850], // Malakpet
+              [78.4400, 17.4300], // Punjagutta
+              [78.3780, 17.4435]  // Hitec City
+            ]
+          }
+        }
+      });
+
+      map.current?.addLayer({
+        id: 'cab-route-line',
+        type: 'line',
+        source: 'cab-route-source',
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round'
+        },
+        paint: {
+          'line-color': '#22c55e',
+          'line-width': 6,
+          'line-opacity': 0.85
         }
       });
 
@@ -415,6 +491,23 @@ export default function App() {
           }}
         >
           {isSimulationActive ? '🛑 Stop Storm Simulation' : '⚡ Simulate Monsoon Downpour'}
+        </button>
+
+        {/* CSV EXPORT BUTTON */}
+        <button
+          onClick={exportToCSV}
+          style={{
+            background: '#0284c7',
+            color: '#fff',
+            border: 'none',
+            padding: '6px 12px',
+            borderRadius: '4px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            fontSize: '11px',
+          }}
+        >
+          📥 Export CSV Report
         </button>
 
         <select
