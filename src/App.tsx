@@ -25,7 +25,7 @@ const DEFAULT_STORM_HOTSPOTS: Hazard[] = [
   { id: 'sim-2', location_name: "Malakpet RUB Severe Inundation", water_depth_level: "CRITICAL_IMPASSABLE", description: "Waterlogged railway underbridge corridor", lng: 78.4867, lat: 17.3850, source: 'simulation' },
   { id: 'sim-3', location_name: "Punjagutta Flyover Slip Road Hazard", water_depth_level: "CRITICAL_IMPASSABLE", description: "Blocked slip road due to pooling", lng: 78.4400, lat: 17.4300, source: 'simulation' },
   { id: 'sim-4', location_name: "Hitec City Mindspace Water Logging", water_depth_level: "CRITICAL_IMPASSABLE", description: "High risk IT hub commute blockage", lng: 78.3780, lat: 17.4435, source: 'simulation' },
-  { id: 'police-1', location_name: "Chanchalguda Flyover Maintenance", water_depth_level: "POLICE_ADVISORY", description: "TG Police Advisory: VIP Route & Lane Diversions", lng: 78.4980, lat: 17.3620, source: 'police' }
+  { id: 'police-1', location_name: "Begumpet Airport Road Diversion", water_depth_level: "POLICE_ADVISORY", description: "TG Police Advisory: Lane Diversions", lng: 78.4983, lat: 17.4399, source: 'police' }
 ];
 
 export default function App() {
@@ -35,7 +35,7 @@ export default function App() {
   const markersRef = useRef<maplibregl.Marker[]>([]);
 
   const [severity, setSeverity] = useState('CRITICAL_IMPASSABLE');
-  const [rainStatus, setRainStatus] = useState<string>('Checking live rain...');
+  const [rainStatus, setRainStatus] = useState<string>('Checking live weather...');
   const [isRaining, setIsRaining] = useState<boolean>(false);
   const [isSimulationActive, setIsSimulationActive] = useState<boolean>(false);
   const [activeHazardsCount, setActiveHazardsCount] = useState<number>(0);
@@ -50,6 +50,9 @@ export default function App() {
   const [showCritical, setShowCritical] = useState<boolean>(true);
   const [showMedium, setShowMedium] = useState<boolean>(true);
   const [showPoliceAlerts, setShowPoliceAlerts] = useState<boolean>(true);
+
+  // TIME-RANGE FILTER TOGGLE (Hours back)
+  const [timeWindow, setTimeWindow] = useState<number>(24);
 
   // 1. OPEN-METEO LIVE RAIN API
   const fetchLiveWeather = async () => {
@@ -141,11 +144,11 @@ export default function App() {
   // EXPORT HAZARD SUMMARY AS CSV FILE
   const exportToCSV = async () => {
     try {
-      const { data } = await supabase.rpc('get_active_hazards');
+      const { data } = await supabase.rpc('get_active_hazards', { hours_back: timeWindow });
       const hazardsToExport = (data && data.length > 0) ? data : (isSimulationActive ? DEFAULT_STORM_HOTSPOTS : []);
 
       if (hazardsToExport.length === 0) {
-        alert("No active hazards currently logged.");
+        alert("No active hazards currently logged for this time window.");
         return;
       }
 
@@ -165,7 +168,7 @@ export default function App() {
       const encodedUri = encodeURI(csvContent);
       const link = document.createElement("a");
       link.setAttribute("href", encodedUri);
-      link.setAttribute("download", `fleet_advisory_report_${new Date().toISOString().slice(0, 10)}.csv`);
+      link.setAttribute("download", `fleet_advisory_report_${timeWindow}h_${new Date().toISOString().slice(0, 10)}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -174,14 +177,13 @@ export default function App() {
     }
   };
 
-  // TOGGLE MONSOON DOWNPOUR SIMULATION WITH COMPLETE CLEANUP
+  // TOGGLE MONSOON DOWNPOUR SIMULATION
   const toggleStormSimulation = async () => {
     if (isSimulationActive) {
       setIsSimulationActive(false);
       setIsRaining(false);
       setRainStatus('☀️ Clear Weather (0 mm/h)');
 
-      // Clean up simulated hotspots from DB
       for (const spot of DEFAULT_STORM_HOTSPOTS) {
         try {
           await supabase.rpc('delete_hazard', { p_id: spot.id });
@@ -217,7 +219,7 @@ export default function App() {
 
   const fetchHazards = async () => {
     try {
-      const { data, error } = await supabase.rpc('get_active_hazards');
+      const { data, error } = await supabase.rpc('get_active_hazards', { hours_back: timeWindow });
       if (!error && data) {
         const points = isSimulationActive ? DEFAULT_STORM_HOTSPOTS : (data as Hazard[]);
         setActiveHazardsCount(points.length);
@@ -241,7 +243,6 @@ export default function App() {
     markersRef.current.forEach((m) => m.remove());
     markersRef.current = [];
 
-    // Filter points based on checkbox toggles
     const visiblePoints = points.filter((point) => {
       if (point.water_depth_level === 'POLICE_ADVISORY' || point.source === 'police') return showPoliceAlerts;
       if (point.water_depth_level === 'CRITICAL_IMPASSABLE') return showCritical;
@@ -293,22 +294,9 @@ export default function App() {
     });
   };
 
-  // Update dynamic corridor route line color based on active hazards / rain
-  useEffect(() => {
-    if (map.current && map.current.getLayer('cab-route-line')) {
-      const isDangerous = isRaining || isSimulationActive || activeHazardsCount > 0;
-      map.current.setPaintProperty(
-        'cab-route-line',
-        'line-color',
-        isDangerous ? '#ef4444' : '#22c55e'
-      );
-    }
-  }, [isRaining, isSimulationActive, activeHazardsCount]);
-
-  // Re-render markers when checkbox toggles change
   useEffect(() => {
     fetchHazards();
-  }, [showCritical, showMedium, showPoliceAlerts]);
+  }, [showCritical, showMedium, showPoliceAlerts, timeWindow]);
 
   // ANIMATED RAIN CANVAS
   useEffect(() => {
@@ -392,39 +380,6 @@ export default function App() {
         source: 'isro-bhuvan-flood-layer',
         paint: {
           'raster-opacity': 0.5
-        }
-      });
-
-      // KEY EMPLOYEE CORRIDOR POLYLINE
-      map.current?.addSource('cab-route-source', {
-        type: 'geojson',
-        data: {
-          type: 'Feature',
-          properties: {},
-          geometry: {
-            type: 'LineString',
-            coordinates: [
-              [78.5281, 17.3688], // Dilsukhnagar
-              [78.4867, 17.3850], // Malakpet
-              [78.4400, 17.4300], // Punjagutta
-              [78.3780, 17.4435]  // Hitec City
-            ]
-          }
-        }
-      });
-
-      map.current?.addLayer({
-        id: 'cab-route-line',
-        type: 'line',
-        source: 'cab-route-source',
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round'
-        },
-        paint: {
-          'line-color': '#22c55e',
-          'line-width': 6,
-          'line-opacity': 0.85
         }
       });
 
@@ -547,7 +502,7 @@ export default function App() {
         </span>
         <div style={{ overflow: 'hidden', flex: 1 }}>
           <div style={{ whiteSpace: 'nowrap', display: 'inline-block', animation: 'mj-ticker-scroll 30s linear infinite' }}>
-            📢 {rainStatus} &nbsp;|&nbsp; 🚨 {activeHazardsCount} active route hazard{activeHazardsCount === 1 ? '' : 's'} being tracked &nbsp;|&nbsp;{' '}
+            📢 {rainStatus} &nbsp;|&nbsp; 🚨 {activeHazardsCount} active route hazard{activeHazardsCount === 1 ? '' : 's'} being tracked ({timeWindow}h window) &nbsp;|&nbsp;{' '}
             👮 Official TG Traffic Police Feed Active &nbsp;|&nbsp; Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : '—'}
           </div>
         </div>
@@ -583,9 +538,35 @@ export default function App() {
               Active Route Hazards
             </span>
 
-            {/* UPDATED SIDEBAR LABEL (NO "cabs" WORD) */}
             <div style={{ fontSize: '28px', fontWeight: 'bold', color: activeHazardsCount > 0 ? '#ef4444' : '#22c55e', marginTop: '4px' }}>
               {activeHazardsCount} <span style={{ fontSize: '13px', color: '#cbd5e1', fontWeight: 'normal' }}>active route hazards</span>
+            </div>
+
+            {/* ADVISORY TIME WINDOW SELECTOR */}
+            <div style={{ background: '#1e293b', padding: '10px', borderRadius: '6px', marginTop: '10px', border: '1px solid #334155' }}>
+              <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>
+                ⏱️ Advisory Time Window
+              </span>
+              <select
+                value={timeWindow}
+                onChange={(e) => setTimeWindow(Number(e.target.value))}
+                style={{
+                  width: '100%',
+                  padding: '6px 8px',
+                  borderRadius: '4px',
+                  background: '#0f172a',
+                  color: '#38bdf8',
+                  border: '1px solid #334155',
+                  fontSize: '12px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer'
+                }}
+              >
+                <option value={12}>Past 12 Hours (Real-Time Ops)</option>
+                <option value={24}>Past 24 Hours (Standard Shift)</option>
+                <option value={48}>Past 48 Hours (Monsoon Spell)</option>
+                <option value={120}>Past 5 Days (Risk History)</option>
+              </select>
             </div>
 
             {/* MAP FILTER TOGGLES */}
@@ -668,21 +649,6 @@ export default function App() {
               <option value={JSON.stringify({ name: "Secunderabad ➔ Begumpet", center: [78.4983, 17.4399] })}>
                 Secunderabad ➔ Begumpet
               </option>
-              <option value={JSON.stringify({ name: "Financial District ➔ Kondapur", center: [78.3392, 17.4168] })}>
-                Financial District ➔ Kondapur
-              </option>
-              <option value={JSON.stringify({ name: "LB Nagar ➔ Uppal", center: [78.5522, 17.3457] })}>
-                LB Nagar ➔ Uppal
-              </option>
-              <option value={JSON.stringify({ name: "Miyapur ➔ Bachupally", center: [78.3565, 17.4966] })}>
-                Miyapur ➔ Bachupally
-              </option>
-              <option value={JSON.stringify({ name: "Mehdipatnam ➔ Tolichowki", center: [78.4382, 17.3950] })}>
-                Mehdipatnam ➔ Tolichowki
-              </option>
-              <option value={JSON.stringify({ name: "Banjara Hills ➔ Jubilee Hills", center: [78.4357, 17.4156] })}>
-                Banjara Hills ➔ Jubilee Hills
-              </option>
             </select>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -698,18 +664,6 @@ export default function App() {
                   {activeHazardsCount > 0 ? 'WATERLOGGED' : 'CLEAR'}
                 </span>
               </div>
-              <div style={{ background: '#1e293b', padding: '8px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '12px' }}>Kukatpally ➔ Ameerpet</span>
-                <span style={{ fontSize: '10px', background: isRaining ? '#f59e0b' : '#22c55e', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
-                  {isRaining ? 'SLOW TRAFFIC' : 'CLEAR'}
-                </span>
-              </div>
-              <div style={{ background: '#1e293b', padding: '8px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '12px' }}>Gachibowli ➔ Airport</span>
-                <span style={{ fontSize: '10px', background: '#22c55e', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
-                  CLEAR
-                </span>
-              </div>
             </div>
           </div>
 
@@ -718,7 +672,7 @@ export default function App() {
           <div style={{ background: '#1e293b', padding: '12px', borderRadius: '8px', border: '1px solid #38bdf8' }}>
             <strong style={{ fontSize: '12px', color: '#38bdf8' }}>🔌 MoveInSync API Ready</strong>
             <p style={{ fontSize: '11px', color: '#94a3b8', margin: '4px 0 0 0', lineHeight: 1.4 }}>
-              MJ exposes REST endpoints (`/get_active_hazards`) that can plug directly into MoveInSync routing engines to auto-avoid flooded cab routes.
+              MJ exposes REST endpoints (`/get_active_hazards`) that can plug directly into MoveInSync routing engines.
             </p>
           </div>
         </div>
