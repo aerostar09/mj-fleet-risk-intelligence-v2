@@ -53,6 +53,8 @@ export default function App() {
   const [rainStatus, setRainStatus] = useState<string>('Checking live weather...');
   const [isRaining, setIsRaining] = useState<boolean>(false);
   const [isSimulationActive, setIsSimulationActive] = useState<boolean>(false);
+  const isSimulatingRef = useRef<boolean>(false);
+
   const [activeHazardsCount, setActiveHazardsCount] = useState<number>(0);
   const [tomtomLive, setTomtomLive] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -67,12 +69,17 @@ export default function App() {
   const [showPoliceAlerts, setShowPoliceAlerts] = useState<boolean>(true);
 
   // TIME WINDOW & ACTIVE HUB SELECTION
-  const [timeWindow, setTimeWindow] = useState<number>(24);
-  const [selectedHub, setSelectedHub] = useState<OperationalHub>(OPERATIONAL_HUBS[0]); // Default to Nanakramguda
+  const [timeWindow, setTimeWindow] = useState<number>(120); // Default to 5 days history
+  const [selectedHub, setSelectedHub] = useState<OperationalHub>(OPERATIONAL_HUBS[0]);
+
+  // Keep ref synchronized with state to prevent race conditions during interval polling
+  useEffect(() => {
+    isSimulatingRef.current = isSimulationActive;
+  }, [isSimulationActive]);
 
   // 1. OPEN-METEO LIVE RAIN API
   const fetchLiveWeather = async () => {
-    if (isSimulationActive) return;
+    if (isSimulatingRef.current) return;
 
     try {
       const res = await fetch(
@@ -89,7 +96,7 @@ export default function App() {
         setRainStatus(`☀️ Clear Weather (${currentRain} mm/h)`);
       }
     } catch {
-      if (!isSimulationActive) {
+      if (!isSimulatingRef.current) {
         setRainStatus('⚠️ Weather feed standby');
       }
     }
@@ -97,7 +104,7 @@ export default function App() {
 
   // 2. TOMTOM HAZARDS
   const fetchTomTomHazards = async () => {
-    if (!TOMTOM_API_KEY) {
+    if (!TOMTOM_API_KEY || isSimulatingRef.current) {
       setTomtomLive(false);
       return;
     }
@@ -142,6 +149,7 @@ export default function App() {
 
   // 3. TSDPS GOVERNMENT DATA
   const loadGovtData = async () => {
+    if (isSimulatingRef.current) return;
     try {
       const tsdpsHazards = await fetchTsdpsRainfallHazards();
       for (const alert of tsdpsHazards) {
@@ -166,7 +174,7 @@ export default function App() {
         radius_km: selectedHub.radiusKm,
         hours_back: timeWindow
       });
-      const hazardsToExport = (data && data.length > 0) ? data : (isSimulationActive ? DEFAULT_STORM_HOTSPOTS : []);
+      const hazardsToExport = (data && data.length > 0) ? data : (isSimulatingRef.current ? DEFAULT_STORM_HOTSPOTS : []);
 
       if (hazardsToExport.length === 0) {
         alert("No active hazards currently logged for this hub and time window.");
@@ -202,35 +210,22 @@ export default function App() {
   const toggleStormSimulation = async () => {
     if (isSimulationActive) {
       setIsSimulationActive(false);
+      isSimulatingRef.current = false;
       setIsRaining(false);
       setRainStatus('☀️ Clear Weather (0 mm/h)');
 
       for (const spot of DEFAULT_STORM_HOTSPOTS) {
         try {
           await supabase.rpc('delete_hazard', { p_id: spot.id });
-        } catch {
-          // Ignore
-        }
+        } catch {}
       }
 
-      await fetchHazards();
+      setTimeout(() => fetchHazards(), 300);
     } else {
       setIsSimulationActive(true);
+      isSimulatingRef.current = true;
       setIsRaining(true);
       setRainStatus('🌧️ STORM SIMULATION: 45 mm/h Downpour!');
-
-      for (const spot of DEFAULT_STORM_HOTSPOTS) {
-        try {
-          await supabase.rpc('add_hazard', {
-            p_location_name: spot.location_name,
-            p_water_depth_level: spot.water_depth_level,
-            p_lng: spot.lng,
-            p_lat: spot.lat,
-          });
-        } catch (e) {
-          console.warn('RPC simulation write skipped:', e);
-        }
-      }
 
       setActiveHazardsCount(DEFAULT_STORM_HOTSPOTS.length);
       renderMarkers(DEFAULT_STORM_HOTSPOTS);
@@ -240,6 +235,8 @@ export default function App() {
 
   // SPATIAL HAZARD FETCH BASED ON POSTGIS HUB GEOFENCE
   const fetchHazards = async () => {
+    if (isSimulatingRef.current) return;
+
     try {
       const { data, error } = await supabase.rpc('get_hazards_near_location', {
         target_lat: selectedHub.center[1],
@@ -249,20 +246,18 @@ export default function App() {
       });
 
       if (!error && data) {
-        const points = isSimulationActive ? DEFAULT_STORM_HOTSPOTS : (data as Hazard[]);
+        const points = data as Hazard[];
         setActiveHazardsCount(points.length);
         renderMarkers(points);
         setLastUpdated(new Date());
       } else {
-        const points = isSimulationActive ? DEFAULT_STORM_HOTSPOTS : [];
-        setActiveHazardsCount(points.length);
-        renderMarkers(points);
+        setActiveHazardsCount(0);
+        renderMarkers([]);
         setLastUpdated(new Date());
       }
     } catch {
-      const points = isSimulationActive ? DEFAULT_STORM_HOTSPOTS : [];
-      setActiveHazardsCount(points.length);
-      renderMarkers(points);
+      setActiveHazardsCount(0);
+      renderMarkers([]);
       setLastUpdated(new Date());
     }
   };
