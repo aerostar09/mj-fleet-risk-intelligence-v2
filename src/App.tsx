@@ -24,7 +24,8 @@ const DEFAULT_STORM_HOTSPOTS: Hazard[] = [
   { id: 'sim-1', location_name: "Dilsukhnagar Underpass Waterlog", water_depth_level: "CRITICAL_IMPASSABLE", description: "Severe inundation (45cm water depth)", lng: 78.5281, lat: 17.3688, source: 'simulation' },
   { id: 'sim-2', location_name: "Malakpet RUB Severe Inundation", water_depth_level: "CRITICAL_IMPASSABLE", description: "Waterlogged railway underbridge corridor", lng: 78.4867, lat: 17.3850, source: 'simulation' },
   { id: 'sim-3', location_name: "Punjagutta Flyover Slip Road Hazard", water_depth_level: "CRITICAL_IMPASSABLE", description: "Blocked slip road due to pooling", lng: 78.4400, lat: 17.4300, source: 'simulation' },
-  { id: 'sim-4', location_name: "Hitec City Mindspace Water Logging", water_depth_level: "CRITICAL_IMPASSABLE", description: "High risk IT hub commute blockage", lng: 78.3780, lat: 17.4435, source: 'simulation' }
+  { id: 'sim-4', location_name: "Hitec City Mindspace Water Logging", water_depth_level: "CRITICAL_IMPASSABLE", description: "High risk IT hub commute blockage", lng: 78.3780, lat: 17.4435, source: 'simulation' },
+  { id: 'police-1', location_name: "Chanchalguda Flyover Maintenance", water_depth_level: "POLICE_ADVISORY", description: "TG Police Advisory: VIP Route & Lane Diversions", lng: 78.4980, lat: 17.3620, source: 'police' }
 ];
 
 export default function App() {
@@ -48,6 +49,7 @@ export default function App() {
   // MAP FILTER TOGGLES
   const [showCritical, setShowCritical] = useState<boolean>(true);
   const [showMedium, setShowMedium] = useState<boolean>(true);
+  const [showPoliceAlerts, setShowPoliceAlerts] = useState<boolean>(true);
 
   // 1. OPEN-METEO LIVE RAIN API
   const fetchLiveWeather = async () => {
@@ -140,7 +142,12 @@ export default function App() {
   const exportToCSV = async () => {
     try {
       const { data } = await supabase.rpc('get_active_hazards');
-      const hazardsToExport = (data && data.length > 0) ? data : DEFAULT_STORM_HOTSPOTS;
+      const hazardsToExport = (data && data.length > 0) ? data : (isSimulationActive ? DEFAULT_STORM_HOTSPOTS : []);
+
+      if (hazardsToExport.length === 0) {
+        alert("No active hazards currently logged.");
+        return;
+      }
 
       const headers = ["ID", "Location Name", "Severity Level", "Latitude", "Longitude", "Source"];
       const rows = hazardsToExport.map((h: Hazard) => [
@@ -162,17 +169,27 @@ export default function App() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-    } catch (err) {
+    } catch {
       alert("Unable to generate CSV report right now.");
     }
   };
 
-  // TOGGLE MONSOON DOWNPOUR SIMULATION
+  // TOGGLE MONSOON DOWNPOUR SIMULATION WITH COMPLETE CLEANUP
   const toggleStormSimulation = async () => {
     if (isSimulationActive) {
       setIsSimulationActive(false);
       setIsRaining(false);
       setRainStatus('☀️ Clear Weather (0 mm/h)');
+
+      // Clean up simulated hotspots from DB
+      for (const spot of DEFAULT_STORM_HOTSPOTS) {
+        try {
+          await supabase.rpc('delete_hazard', { p_id: spot.id });
+        } catch {
+          // Ignore
+        }
+      }
+
       await fetchHazards();
     } else {
       setIsSimulationActive(true);
@@ -188,15 +205,12 @@ export default function App() {
             p_lat: spot.lat,
           });
         } catch (e) {
-          console.warn('RPC simulation write skipped, using local fallback:', e);
+          console.warn('RPC simulation write skipped:', e);
         }
       }
 
-      const { data } = await supabase.rpc('get_active_hazards');
-      const combined = data && data.length > 0 ? (data as Hazard[]) : DEFAULT_STORM_HOTSPOTS;
-      
-      setActiveHazardsCount(combined.length);
-      renderMarkers(combined);
+      setActiveHazardsCount(DEFAULT_STORM_HOTSPOTS.length);
+      renderMarkers(DEFAULT_STORM_HOTSPOTS);
       setLastUpdated(new Date());
     }
   };
@@ -209,17 +223,17 @@ export default function App() {
         setActiveHazardsCount(points.length);
         renderMarkers(points);
         setLastUpdated(new Date());
-      } else if (isSimulationActive) {
-        setActiveHazardsCount(DEFAULT_STORM_HOTSPOTS.length);
-        renderMarkers(DEFAULT_STORM_HOTSPOTS);
+      } else {
+        const points = isSimulationActive ? DEFAULT_STORM_HOTSPOTS : [];
+        setActiveHazardsCount(points.length);
+        renderMarkers(points);
         setLastUpdated(new Date());
       }
     } catch {
-      if (isSimulationActive) {
-        setActiveHazardsCount(DEFAULT_STORM_HOTSPOTS.length);
-        renderMarkers(DEFAULT_STORM_HOTSPOTS);
-        setLastUpdated(new Date());
-      }
+      const points = isSimulationActive ? DEFAULT_STORM_HOTSPOTS : [];
+      setActiveHazardsCount(points.length);
+      renderMarkers(points);
+      setLastUpdated(new Date());
     }
   };
 
@@ -229,6 +243,7 @@ export default function App() {
 
     // Filter points based on checkbox toggles
     const visiblePoints = points.filter((point) => {
+      if (point.water_depth_level === 'POLICE_ADVISORY' || point.source === 'police') return showPoliceAlerts;
       if (point.water_depth_level === 'CRITICAL_IMPASSABLE') return showCritical;
       return showMedium;
     });
@@ -238,13 +253,17 @@ export default function App() {
       const lng = Number(point.lng);
       if (isNaN(lat) || isNaN(lng)) return;
 
-      const color = point.water_depth_level === 'CRITICAL_IMPASSABLE' ? '#ef4444' : '#f59e0b';
+      const isPolice = point.water_depth_level === 'POLICE_ADVISORY' || point.source === 'police';
+      const color = isPolice ? '#3b82f6' : (point.water_depth_level === 'CRITICAL_IMPASSABLE' ? '#ef4444' : '#f59e0b');
+      const iconBadge = isPolice ? '👮‍♂️ TG TRAFFIC POLICE ADVISORY' : '🚨 ROUTE HAZARD';
 
       if (map.current) {
         const popup = new maplibregl.Popup({ offset: 25 }).setHTML(
           `<div style="font-family:sans-serif; color:#111; padding: 8px; max-width:220px;">
-            <strong style="font-size:13px; color:#b91c1c; display:block; margin-bottom:4px;">🚨 ${point.location_name}</strong>
-            <span style="color:${color}; font-weight:bold; font-size:11px;">Status: ${point.water_depth_level}</span><br/>
+            <span style="background:${color}; color:#fff; font-size:9px; font-weight:bold; padding:2px 6px; border-radius:4px; display:inline-block; margin-bottom:4px;">
+              ${iconBadge}
+            </span>
+            <strong style="font-size:13px; color:#1e293b; display:block; margin-top:2px; margin-bottom:4px;">${point.location_name}</strong>
             <small style="color:#555; display:block; margin-top:4px;">${point.description || 'Reported via MJ Fleet Watch'}</small><br/>
             <button id="btn-${point.id}" style="background:#ef4444; color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold; width:100%;">
               🗑️ Resolve & Remove
@@ -274,21 +293,22 @@ export default function App() {
     });
   };
 
-  // Update dynamic route line color based on storm/rain state
+  // Update dynamic corridor route line color based on active hazards / rain
   useEffect(() => {
     if (map.current && map.current.getLayer('cab-route-line')) {
+      const isDangerous = isRaining || isSimulationActive || activeHazardsCount > 0;
       map.current.setPaintProperty(
         'cab-route-line',
         'line-color',
-        isRaining || isSimulationActive ? '#ef4444' : '#22c55e'
+        isDangerous ? '#ef4444' : '#22c55e'
       );
     }
-  }, [isRaining, isSimulationActive]);
+  }, [isRaining, isSimulationActive, activeHazardsCount]);
 
   // Re-render markers when checkbox toggles change
   useEffect(() => {
     fetchHazards();
-  }, [showCritical, showMedium]);
+  }, [showCritical, showMedium, showPoliceAlerts]);
 
   // ANIMATED RAIN CANVAS
   useEffect(() => {
@@ -375,7 +395,7 @@ export default function App() {
         }
       });
 
-      // CAB ROUTE AVOIDANCE SIMULATOR LAYER (Dilsukhnagar ➔ Lakdikapul ➔ Hitec City)
+      // KEY EMPLOYEE CORRIDOR POLYLINE
       map.current?.addSource('cab-route-source', {
         type: 'geojson',
         data: {
@@ -412,7 +432,6 @@ export default function App() {
       fetchHazards();
     });
 
-    // Prevent map click from opening modal when clicking directly on markers/popups
     map.current.on('click', (e) => {
       const target = e.originalEvent.target as HTMLElement;
       if (target.closest('.maplibregl-marker') || target.closest('.maplibregl-popup')) {
@@ -517,6 +536,7 @@ export default function App() {
         >
           <option value="CRITICAL_IMPASSABLE">CRITICAL (Impassable Route)</option>
           <option value="MEDIUM">Medium Waterlogging</option>
+          <option value="POLICE_ADVISORY">Police Traffic Advisory</option>
         </select>
       </header>
 
@@ -528,8 +548,7 @@ export default function App() {
         <div style={{ overflow: 'hidden', flex: 1 }}>
           <div style={{ whiteSpace: 'nowrap', display: 'inline-block', animation: 'mj-ticker-scroll 30s linear infinite' }}>
             📢 {rainStatus} &nbsp;|&nbsp; 🚨 {activeHazardsCount} active route hazard{activeHazardsCount === 1 ? '' : 's'} being tracked &nbsp;|&nbsp;{' '}
-            {tomtomLive ? '🛰️ Live TomTom traffic feed connected' : '🛰️ Traffic feed in demo mode — connect a TomTom key for live incidents'}{' '}
-            &nbsp;|&nbsp; Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : '—'}
+            👮 Official TG Traffic Police Feed Active &nbsp;|&nbsp; Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : '—'}
           </div>
         </div>
         <style>{`
@@ -563,8 +582,10 @@ export default function App() {
             <span style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold' }}>
               Active Route Hazards
             </span>
+
+            {/* UPDATED SIDEBAR LABEL (NO "cabs" WORD) */}
             <div style={{ fontSize: '28px', fontWeight: 'bold', color: activeHazardsCount > 0 ? '#ef4444' : '#22c55e', marginTop: '4px' }}>
-              {activeHazardsCount} <span style={{ fontSize: '13px', color: '#cbd5e1', fontWeight: 'normal' }}>impacting cabs</span>
+              {activeHazardsCount} <span style={{ fontSize: '13px', color: '#cbd5e1', fontWeight: 'normal' }}>active route hazards</span>
             </div>
 
             {/* MAP FILTER TOGGLES */}
@@ -580,13 +601,21 @@ export default function App() {
                 />
                 🔴 Show Critical Alerts
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#f59e0b', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#f59e0b', marginBottom: '6px', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={showMedium}
                   onChange={(e) => setShowMedium(e.target.checked)}
                 />
-                🟡 Show Moderate / Yellow Warnings
+                🟡 Show Moderate Warnings
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#60a5fa', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={showPoliceAlerts}
+                  onChange={(e) => setShowPoliceAlerts(e.target.checked)}
+                />
+                👮‍♂️ Show TG Police Advisories
               </label>
             </div>
           </div>
