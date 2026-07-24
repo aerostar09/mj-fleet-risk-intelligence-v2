@@ -45,6 +45,10 @@ export default function App() {
   const [reportCoords, setReportCoords] = useState<{ lng: number; lat: number } | null>(null);
   const [reportName, setReportName] = useState('');
 
+  // MAP FILTER TOGGLES
+  const [showCritical, setShowCritical] = useState<boolean>(true);
+  const [showMedium, setShowMedium] = useState<boolean>(true);
+
   // 1. OPEN-METEO LIVE RAIN API
   const fetchLiveWeather = async () => {
     if (isSimulationActive) return;
@@ -70,7 +74,7 @@ export default function App() {
     }
   };
 
-  // 2. TOMTOM HAZARDS (With formatted location titles)
+  // 2. TOMTOM HAZARDS
   const fetchTomTomHazards = async () => {
     if (!TOMTOM_API_KEY) {
       setTomtomLive(false);
@@ -115,7 +119,7 @@ export default function App() {
     }
   };
 
-  // 3. FETCH TSDPS GOVERNMENT RAINFALL ALERTS
+  // 3. TSDPS GOVERNMENT DATA
   const loadGovtData = async () => {
     try {
       const tsdpsHazards = await fetchTsdpsRainfallHazards();
@@ -192,7 +196,13 @@ export default function App() {
     markersRef.current.forEach((m) => m.remove());
     markersRef.current = [];
 
-    points.forEach((point) => {
+    // Filter points based on checkbox toggles
+    const visiblePoints = points.filter((point) => {
+      if (point.water_depth_level === 'CRITICAL_IMPASSABLE') return showCritical;
+      return showMedium;
+    });
+
+    visiblePoints.forEach((point) => {
       const lat = Number(point.lat);
       const lng = Number(point.lng);
       if (isNaN(lat) || isNaN(lng)) return;
@@ -232,6 +242,11 @@ export default function App() {
       }
     });
   };
+
+  // Re-render markers when checkbox toggles change
+  useEffect(() => {
+    fetchHazards();
+  }, [showCritical, showMedium]);
 
   // ANIMATED RAIN CANVAS
   useEffect(() => {
@@ -321,7 +336,7 @@ export default function App() {
       fetchHazards();
     });
 
-    // Prevent map click from opening "Report Modal" when clicking directly on a marker pin or popup
+    // Prevent map click from opening modal when clicking directly on markers/popups
     map.current.on('click', (e) => {
       const target = e.originalEvent.target as HTMLElement;
       if (target.closest('.maplibregl-marker') || target.closest('.maplibregl-popup')) {
@@ -458,15 +473,97 @@ export default function App() {
             <div style={{ fontSize: '28px', fontWeight: 'bold', color: activeHazardsCount > 0 ? '#ef4444' : '#22c55e', marginTop: '4px' }}>
               {activeHazardsCount} <span style={{ fontSize: '13px', color: '#cbd5e1', fontWeight: 'normal' }}>impacting cabs</span>
             </div>
+
+            {/* MAP FILTER TOGGLES */}
+            <div style={{ background: '#1e293b', padding: '10px', borderRadius: '6px', marginTop: '10px', border: '1px solid #334155' }}>
+              <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold', display: 'block', marginBottom: '8px', textTransform: 'uppercase' }}>
+                Filter Map Markers
+              </span>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#ef4444', marginBottom: '6px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={showCritical}
+                  onChange={(e) => setShowCritical(e.target.checked)}
+                />
+                🔴 Show Critical Alerts
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#f59e0b', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={showMedium}
+                  onChange={(e) => setShowMedium(e.target.checked)}
+                />
+                🟡 Show Moderate / Yellow Warnings
+              </label>
+            </div>
           </div>
 
           <hr style={{ borderColor: '#334155', margin: 0 }} />
 
+          {/* DYNAMIC KEY EMPLOYEE CORRIDORS DROPDOWN */}
           <div>
-            <span style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold' }}>
+            <span style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold', display: 'block', marginBottom: '8px' }}>
               Key Employee Corridors
             </span>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+
+            <select
+              onChange={(e) => {
+                if (!e.target.value) return;
+                const selectedCorridor = JSON.parse(e.target.value);
+                if (map.current) {
+                  map.current.flyTo({
+                    center: selectedCorridor.center,
+                    zoom: 13.5,
+                    essential: true
+                  });
+                }
+              }}
+              style={{
+                width: '100%',
+                padding: '8px 10px',
+                borderRadius: '6px',
+                background: '#1e293b',
+                color: '#f8fafc',
+                border: '1px solid #334155',
+                fontSize: '12px',
+                marginBottom: '12px',
+                cursor: 'pointer'
+              }}
+            >
+              <option value="">-- Select Corridor to Inspect --</option>
+              <option value={JSON.stringify({ name: "Hitec City ➔ ORR", center: [78.3772, 17.4435] })}>
+                Hitec City ➔ ORR
+              </option>
+              <option value={JSON.stringify({ name: "Dilsukhnagar ➔ Lakdikapul", center: [78.5280, 17.3688] })}>
+                Dilsukhnagar ➔ Lakdikapul
+              </option>
+              <option value={JSON.stringify({ name: "Gachibowli ➔ Airport (RGIA)", center: [78.3614, 17.4401] })}>
+                Gachibowli ➔ Airport
+              </option>
+              <option value={JSON.stringify({ name: "Kukatpally ➔ Ameerpet", center: [78.4071, 17.4849] })}>
+                Kukatpally ➔ Ameerpet
+              </option>
+              <option value={JSON.stringify({ name: "Secunderabad ➔ Begumpet", center: [78.4983, 17.4399] })}>
+                Secunderabad ➔ Begumpet
+              </option>
+              <option value={JSON.stringify({ name: "Financial District ➔ Kondapur", center: [78.3392, 17.4168] })}>
+                Financial District ➔ Kondapur
+              </option>
+              <option value={JSON.stringify({ name: "LB Nagar ➔ Uppal", center: [78.5522, 17.3457] })}>
+                LB Nagar ➔ Uppal
+              </option>
+              <option value={JSON.stringify({ name: "Miyapur ➔ Bachupally", center: [78.3565, 17.4966] })}>
+                Miyapur ➔ Bachupally
+              </option>
+              <option value={JSON.stringify({ name: "Mehdipatnam ➔ Tolichowki", center: [78.4382, 17.3950] })}>
+                Mehdipatnam ➔ Tolichowki
+              </option>
+              <option value={JSON.stringify({ name: "Banjara Hills ➔ Jubilee Hills", center: [78.4357, 17.4156] })}>
+                Banjara Hills ➔ Jubilee Hills
+              </option>
+            </select>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div style={{ background: '#1e293b', padding: '8px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '12px' }}>Hitec City ➔ ORR</span>
                 <span style={{ fontSize: '10px', background: isRaining ? '#ef4444' : '#22c55e', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
@@ -477,6 +574,12 @@ export default function App() {
                 <span style={{ fontSize: '12px' }}>Dilsukhnagar ➔ Lakdikapul</span>
                 <span style={{ fontSize: '10px', background: activeHazardsCount > 0 ? '#ef4444' : '#22c55e', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
                   {activeHazardsCount > 0 ? 'WATERLOGGED' : 'CLEAR'}
+                </span>
+              </div>
+              <div style={{ background: '#1e293b', padding: '8px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12px' }}>Kukatpally ➔ Ameerpet</span>
+                <span style={{ fontSize: '10px', background: isRaining ? '#f59e0b' : '#22c55e', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
+                  {isRaining ? 'SLOW TRAFFIC' : 'CLEAR'}
                 </span>
               </div>
               <div style={{ background: '#1e293b', padding: '8px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
