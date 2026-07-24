@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import { createClient } from '@supabase/supabase-js';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { fetchTsdpsRainfallHazards } from './tsdpsService';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string) || "https://enwquyeqjoeguzcgjnlu.supabase.co";
 const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVud3F1eWVxam9lZ3V6Y2dqbmx1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM2MTg1OTUsImV4cCI6MjA2OTE5NDU5NX0.MDM4MDE1In30.AsozMTaDjKE4nCqNwmQZSRq_-hS7mHXaIpYOyuCD2kg";
@@ -46,7 +47,7 @@ export default function App() {
 
   // 1. OPEN-METEO LIVE RAIN API
   const fetchLiveWeather = async () => {
-    if (isSimulationActive) return; // Don't let weather poll clear active simulation
+    if (isSimulationActive) return;
 
     try {
       const res = await fetch(
@@ -69,7 +70,7 @@ export default function App() {
     }
   };
 
-  // 2. TOMTOM HAZARDS
+  // 2. TOMTOM HAZARDS (With formatted location titles)
   const fetchTomTomHazards = async () => {
     if (!TOMTOM_API_KEY) {
       setTomtomLive(false);
@@ -77,7 +78,7 @@ export default function App() {
     }
     try {
       const bbox = '78.10,17.10,78.80,17.70';
-      const fields = '{incidents{type,geometry{type,coordinates},properties{iconCategory,events{description}}}}';
+      const fields = '{incidents{type,geometry{type,coordinates},properties{iconCategory,from,to,events{description}}}}';
       const url = `https://api.tomtom.com/traffic/services/5/incidentDetails?bbox=${bbox}&fields=${encodeURIComponent(
         fields
       )}&language=en-GB&key=${TOMTOM_API_KEY}`;
@@ -98,10 +99,12 @@ export default function App() {
         const lat = point?.[1];
         if (typeof lng !== 'number' || typeof lat !== 'number') continue;
 
-        const description = incident?.properties?.events?.[0]?.description || 'TomTom traffic incident';
+        const streetName = incident?.properties?.from || incident?.properties?.to;
+        const description = incident?.properties?.events?.[0]?.description || 'Traffic Advisory';
+        const locationTitle = streetName ? `${streetName} (${description})` : description;
 
         await supabase.rpc('add_hazard', {
-          p_location_name: `TomTom: ${description.slice(0, 30)}`,
+          p_location_name: `TomTom: ${locationTitle.slice(0, 45)}`,
           p_water_depth_level: 'MEDIUM',
           p_lng: lng,
           p_lat: lat,
@@ -112,21 +115,35 @@ export default function App() {
     }
   };
 
-  // TOGGLE MONSOON DOWNPOUR SIMULATION (START / STOP)
+  // 3. FETCH TSDPS GOVERNMENT RAINFALL ALERTS
+  const loadGovtData = async () => {
+    try {
+      const tsdpsHazards = await fetchTsdpsRainfallHazards();
+      for (const alert of tsdpsHazards) {
+        await supabase.rpc('add_hazard', {
+          p_location_name: alert.title,
+          p_water_depth_level: alert.severity,
+          p_lng: alert.coordinates[0],
+          p_lat: alert.coordinates[1],
+        });
+      }
+    } catch (e) {
+      console.warn('TSDPS fetch skipped:', e);
+    }
+  };
+
+  // TOGGLE MONSOON DOWNPOUR SIMULATION
   const toggleStormSimulation = async () => {
     if (isSimulationActive) {
-      // STOP SIMULATION
       setIsSimulationActive(false);
       setIsRaining(false);
       setRainStatus('☀️ Clear Weather (0 mm/h)');
-      await fetchHazards(); // Reload baseline database hazards
+      await fetchHazards();
     } else {
-      // START SIMULATION
       setIsSimulationActive(true);
       setIsRaining(true);
       setRainStatus('🌧️ STORM SIMULATION: 45 mm/h Downpour!');
 
-      // 1. Try DB RPC insert
       for (const spot of DEFAULT_STORM_HOTSPOTS) {
         try {
           await supabase.rpc('add_hazard', {
@@ -140,7 +157,6 @@ export default function App() {
         }
       }
 
-      // 2. Guaranteed render of simulated markers
       const { data } = await supabase.rpc('get_active_hazards');
       const combined = data && data.length > 0 ? (data as Hazard[]) : DEFAULT_STORM_HOTSPOTS;
       
@@ -185,11 +201,11 @@ export default function App() {
 
       if (map.current) {
         const popup = new maplibregl.Popup({ offset: 25 }).setHTML(
-          `<div style="font-family:sans-serif; color:#111; padding: 6px;">
-            <strong style="font-size:13px; color:#b91c1c;">🚨 ${point.location_name}</strong><br/>
+          `<div style="font-family:sans-serif; color:#111; padding: 8px; max-width:220px;">
+            <strong style="font-size:13px; color:#b91c1c; display:block; margin-bottom:4px;">🚨 ${point.location_name}</strong>
             <span style="color:${color}; font-weight:bold; font-size:11px;">Status: ${point.water_depth_level}</span><br/>
-            <small style="color:#555;">${point.description || 'Reported via MJ Fleet Watch'}</small><br/><br/>
-            <button id="btn-${point.id}" style="background:#ef4444; color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">
+            <small style="color:#555; display:block; margin-top:4px;">${point.description || 'Reported via MJ Fleet Watch'}</small><br/>
+            <button id="btn-${point.id}" style="background:#ef4444; color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold; width:100%;">
               🗑️ Resolve & Remove
             </button>
            </div>`
@@ -283,12 +299,35 @@ export default function App() {
 
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
 
-    map.current.on('load', () => {
+    map.current.on('load', () => {  
+      map.current?.addSource('isro-bhuvan-flood-layer', {
+        type: 'raster',
+        tiles: [
+          'https://bhuvan-vec1.nrsc.gov.in/bhuvan/gwc/service/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=flood:hyderabad_low_lying&STYLES=&FORMAT=image/png&TRANSPARENT=true&WIDTH=256&HEIGHT=256&SRS=EPSG:3857&BBOX={bbox-epsg-3857}'
+        ],
+        tileSize: 256
+      });
+    
+      map.current?.addLayer({
+        id: 'bhuvan-flood-overlay',
+        type: 'raster',
+        source: 'isro-bhuvan-flood-layer',
+        paint: {
+          'raster-opacity': 0.5
+        }
+      });
+
       if (!map.current) return;
       fetchHazards();
     });
 
+    // Prevent map click from opening "Report Modal" when clicking directly on a marker pin or popup
     map.current.on('click', (e) => {
+      const target = e.originalEvent.target as HTMLElement;
+      if (target.closest('.maplibregl-marker') || target.closest('.maplibregl-popup')) {
+        return;
+      }
+
       setReportCoords({ lng: e.lngLat.lng, lat: e.lngLat.lat });
       setReportName('');
       setReportOpen(true);
@@ -296,10 +335,12 @@ export default function App() {
 
     fetchLiveWeather();
     fetchTomTomHazards();
+    loadGovtData();
 
     const interval = setInterval(() => {
       fetchLiveWeather();
       fetchTomTomHazards();
+      loadGovtData();
       fetchHazards();
     }, 15000);
 
@@ -345,7 +386,6 @@ export default function App() {
           {tomtomLive ? '● LIVE TRAFFIC FEED' : '○ DEMO MODE (no traffic key)'}
         </span>
 
-        {/* DYNAMIC TOGGLE BUTTON: START / STOP SIMULATION */}
         <button
           onClick={toggleStormSimulation}
           style={{
